@@ -448,19 +448,16 @@ with right:
 
     if go:
         svd_to_use = svd_inline if svd_inline is not None else svd_art
-recs, err = get_recs(
-    donor_id, donors, projects, interactions,
-    svd_to_use, None, None, None,
-    weights,
-    {"region": ui_regions, "sector": ui_sectors, "budget": budget},
-    ethical=ethical, topk=10,
-    override_regions=ui_regions, override_sectors=ui_sectors
-)
+        recs, err = get_recs(
+            donor_id, donors, projects, interactions, svd_to_use, None, None, None,
+            weights, {"region": ui_regions, "sector": ui_sectors, "budget": budget},
+            ethical=ethical, topk=10, override_regions=ui_regions, override_sectors=ui_sectors
+        )
 
         st.session_state["recs"] = recs if err is None else pd.DataFrame()
         if err: st.warning(err)
 
-    recs = st.session_state.get("recs", pd.DataFrame())
+        recs = st.session_state.get("recs", pd.DataFrame())
     if not has_rows(recs):
         st.info("Click **Get recommendations**.")
     else:
