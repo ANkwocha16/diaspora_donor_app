@@ -18,3 +18,6 @@ dist/
 build/
 # Streamlit cache
 .streamlit/
+# Always include these
+!data
+!artifacts
