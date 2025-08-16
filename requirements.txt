@@ -1,0 +1,21 @@
+# Core app framework
+streamlit==1.38.0  
+
+# Data handling
+pandas==2.2.2
+numpy==1.26.4  
+
+# Visualization
+matplotlib==3.9.0  
+
+# Machine learning / algorithms
+scikit-learn==1.5.1
+scikit-surprise==1.1.4  
+
+# Utilities
+scipy==1.13.1
+joblib==1.4.2  
+
+# Optional (helps with charts & logging in Streamlit Cloud)
+altair==5.3.0
+
