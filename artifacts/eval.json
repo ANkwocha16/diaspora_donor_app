@@ -1,0 +1,30 @@
+{
+  "svd": {
+    "precision_at_5": null,
+    "coverage_at_5": 0.035,
+    "diversity_at_5": null,
+    "rmse": 1.1836547749114492,
+    "mae": 0.9541457379940005
+  },
+  "rule": {
+    "precision_at_5": null,
+    "coverage_at_5": null,
+    "diversity_at_5": null,
+    "rmse": null,
+    "mae": null
+  },
+  "content": {
+    "precision_at_5": null,
+    "coverage_at_5": null,
+    "diversity_at_5": null,
+    "rmse": null,
+    "mae": null
+  },
+  "blend": {
+    "precision_at_5": null,
+    "coverage_at_5": null,
+    "diversity_at_5": null,
+    "rmse": null,
+    "mae": null
+  }
+}

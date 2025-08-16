@@ -1,0 +1,17 @@
+{
+  "first_name": "der",
+  "last_name": "jjhg",
+  "age": 22,
+  "sex": "Male",
+  "diaspora": "hk",
+  "budget": 10.0,
+  "freq": "Monthly",
+  "region_interest": [
+    "East Africa",
+    "North Africa"
+  ],
+  "cause_interest": [
+    "Health"
+  ],
+  "top_k": 10
+}
