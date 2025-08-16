@@ -3,6 +3,7 @@ streamlit==1.38.0
 # Data
 pandas==2.2.2
 numpy==1.26.4
+pyarrow==14.0.2
 # Viz
 matplotlib==3.9.0
 # ML utils (no scikit-surprise)
