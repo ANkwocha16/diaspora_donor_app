@@ -19,6 +19,11 @@ if st.session_state.get("_app_version") != APP_VERSION:
     except Exception:
         pass
     st.session_state["_app_version"] = APP_VERSION
+    
+# Inline CF training toggle (off on Streamlit Cloud)
+# On local dev, set:  export ALLOW_INLINE_TRAIN=1  (or on Windows: set ALLOW_INLINE_TRAIN=1)
+import os
+ALLOW_INLINE_TRAIN = os.environ.get("ALLOW_INLINE_TRAIN", "0") == "1"
 
 # Root folder (repo-local)
 BASE = "artifacts"
@@ -343,7 +348,27 @@ with left:
     hist_ids = set(interactions["Donor_ID"].unique()) if has_rows(interactions) else set()
     ddf["label"] = ddf.apply(lambda r: f"{r['donor_id']} - {r.get('name','')}" + (" ✅" if r["donor_id"] in hist_ids else ""), axis=1)
     options = ddf["label"].tolist() or donors.apply(lambda r: f"{r['donor_id']} - {r.get('name','')}", axis=1).tolist()
+    
+        # --------- SVD source selector ----------
+    if ALLOW_INLINE_TRAIN:
+        cf_mode = st.radio(
+            "Collaborative filtering source",
+            ["Use pre-trained (fast)", "Train inline from interactions"],
+            index=0
+        )
+    else:
+        cf_mode = "Use pre-trained (fast)"
+        st.caption("CF training disabled on this deployment (using pre-trained model).")
 
+    if cf_mode == "Train inline from interactions":
+        if "svd_inline" not in st.session_state:
+            with st.spinner("Training SVD from interactions…"):
+                st.session_state["svd_inline"] = train_svd_inline(interactions)
+        svd_inline = st.session_state.get("svd_inline", None)
+    else:
+        svd_inline = None
+    # ----------------------------------------
+    
     # keep selected donor between reruns
     default_id = st.session_state.get("selected_donor_id")
     def_label = None
@@ -422,12 +447,16 @@ with right:
         st.info("Shortlist cleared.")
 
     if go:
-        weights = (w_rule, w_cos, w_cf) if hybrid_mode else (1.0, 0.0, 0.0)
-        recs, err = get_recs(
-            donor_id, donors, projects, interactions, svd_art, proj_vecs, feats,
-            weights, {"region": ui_regions, "sector": ui_sectors, "budget": budget},
-            ethical=True, topk=10, override_regions=ui_regions, override_sectors=ui_sectors
-        )
+        svd_to_use = svd_inline if svd_inline is not None else svd_art
+recs, err = get_recs(
+    donor_id, donors, projects, interactions,
+    svd_to_use, None, None, None,
+    weights,
+    {"region": ui_regions, "sector": ui_sectors, "budget": budget},
+    ethical=ethical, topk=10,
+    override_regions=ui_regions, override_sectors=ui_sectors
+)
+
         st.session_state["recs"] = recs if err is None else pd.DataFrame()
         if err: st.warning(err)
 
