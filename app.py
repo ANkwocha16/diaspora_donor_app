@@ -675,12 +675,13 @@ with tab_met:
     st.subheader("Evaluation metrics (donor-level)")
     r = st.session_state.get("recs", pd.DataFrame())
     sel_id = st.session_state.get("selected_donor_id", donors.iloc[0]["donor_id"])
-    k = st.selectbox("Top-K", [5,10], index=0)
-    thr_mode = st.selectbox("Relevance threshold", ["Median per donor","Any positive (>0)"], index=0)
+    k = st.selectbox("Top-K", [5, 10], index=0)
+    thr_mode = st.selectbox("Relevance threshold", ["Median per donor", "Any positive (>0)"], index=0)
 
-    m = compute_metrics_for_donor(sel_id, r, interactions, projects, cf_estimates, k=k, thr_mode=thr_mode)
+    # returns (metrics_dict, diagnostics_dict)
+    m, diag = compute_metrics_for_donor(sel_id, r, interactions, projects, cf_estimates, k=k, thr_mode=thr_mode)
 
-    c1,c2,c3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.metric("Precision@K", pct(m["precision_k"]))
         st.metric("Coverage@K",  pct(m["coverage_k"]))
@@ -693,13 +694,14 @@ with tab_met:
         st.metric("MAP@K",       pct(m["map_k"]))
         st.metric("Diversity@K", pct(m["diversity_k"]))
         st.metric("RMSE",        num3(m["rmse"]))
-    # ---- diagnostics line (tiny helper to understand zeros)
-    diag = D  # if you named the second return value D above
+
+    # tiny diagnostic line so you can see why zeros might happen
     st.caption(
-       "Diagnostics — history rows: "
-       f"{diag['n_hist']}, CF rows: {diag['n_cf']}, hits in top-K: "
-       f"{diag['hits']}, overlap size (any history): {diag['overlap_size']}, relevant items: {diag['n_rel']}."
-   )
+        "Diagnostics — history rows: "
+        f"{diag.get('n_hist',0)}, CF rows: {diag.get('n_cf',0)}, "
+        f"hits in top-K: {diag.get('hits',0)}, overlap size (any history): {diag.get('overlap_size',0)}, "
+        f"relevant items: {diag.get('n_rel',0)}."
+    )
 
 # --------------- WHY THESE PICKS ---------------
 with tab_why:
