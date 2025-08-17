@@ -157,14 +157,14 @@ def load_core(base):
     projects["popularity"]     = pd.to_numeric(projects["popularity"], errors="coerce").fillna(0.0)
 
     # ---------- interactions (optional; supports interactions.csv or ratings*.csv)
-   interactions = pd.DataFrame(columns=["donor_id","project_id","score"])
-   inter_path = None
-   for n in ["interactions.csv", "ratings_5000x2000.csv", "ratings.csv", "synthetic_interactions_5000x2000.csv"]:
+    interactions = pd.DataFrame(columns=["donor_id","project_id","score"])
+    inter_path = None
+    for n in ["interactions.csv", "ratings_5000x2000.csv", "ratings.csv", "synthetic_interactions_5000x2000.csv"]:
        p = os.path.join(base, n)
        if os.path.exists(p):
            inter_path = p
            break
-   if inter_path:
+    if inter_path:
        inter = pd.read_csv(inter_path)
        # Canonicalize column names to lower-case first
        inter.columns = [c.strip().lower() for c in inter.columns]
