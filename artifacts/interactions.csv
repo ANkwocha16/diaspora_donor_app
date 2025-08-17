@@ -1,4 +1,4 @@
-Donor_ID,Project_ID,Score
+donor_id,project_id,score
 DNR0001,PRJ1861,0.8284
 DNR0001,PRJ0354,0.6626
 DNR0001,PRJ1334,0.8867
