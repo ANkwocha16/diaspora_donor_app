@@ -128,53 +128,94 @@ def rule_score(donor_row, proj_row):
 # ----------------------------- Data loading -----------------------------
 @st.cache_data(show_spinner=False)
 def load_core(base):
+    # ---- pick donors/projects paths
     donors_path = os.path.join(base, "donors_5000.csv") if os.path.exists(os.path.join(base,"donors_5000.csv")) else os.path.join(base,"donors.csv")
     projects_path = os.path.join(base, "projects_2000.csv") if os.path.exists(os.path.join(base,"projects_2000.csv")) else os.path.join(base,"projects.csv")
 
+    # ---- pick interactions path (optional)
     inter_path = None
     for n in ["synthetic_interactions_5000x2000.csv","ratings_5000x2000.csv","ratings.csv","interactions.csv"]:
         p = os.path.join(base, n)
-        if os.path.exists(p): inter_path = p; break
+        if os.path.exists(p):
+            inter_path = p
+            break
 
+    # ---- load main tables
     donors = pd.read_csv(donors_path)
     projects = pd.read_csv(projects_path)
-    interactions = pd.read_csv(inter_path) if inter_path else pd.DataFrame(columns=["Donor_ID","Project_ID","Score"])
 
+    # clean donors
     donors.columns = [c.strip() for c in donors.columns]
-    projects.columns = [c.strip().lower() for c in projects.columns]
-    interactions.columns = [c.strip() for c in interactions.columns]
+    donors.rename(columns={c:c.lower() for c in donors.columns}, inplace=True)
 
-    # ID normalization
     def norm_id_dnr(x: str) -> str:
         s = str(x).strip().upper()
         m = re.search(r"(\d+)$", s)
         if not m: return s
-        digits = m.group(1)
-        return "DNR" + digits.zfill(4)
+        return "DNR" + m.group(1).zfill(4)
 
-    donors.rename(columns={c:c.lower() for c in donors.columns}, inplace=True)
-    donors["donor_id"] = donors["donor_id"].apply(norm_id_dnr)
+    if "donor_id" in donors.columns:
+        donors["donor_id"] = donors["donor_id"].apply(norm_id_dnr)
+    else:
+        # if your donor id column is oddly named, try to find it
+        cand = [c for c in donors.columns if "donor" in c or "id" == c]
+        if cand:
+            donors.rename(columns={cand[0]:"donor_id"}, inplace=True)
+            donors["donor_id"] = donors["donor_id"].apply(norm_id_dnr)
+        else:
+            raise ValueError("Could not find a donor id column in donors CSV")
 
-    if not interactions.empty:
-        lower = {c.lower():c for c in interactions.columns}
-        # standardize to Donor_ID, Project_ID, Score
-        mapping = {}
-        for want in ["donor_id","project_id","score"]:
-            if want in [c.lower() for c in interactions.columns]:
-                mapping[lower[want]] = want.title().replace("_","_")
-        interactions = interactions.rename(columns={
-            mapping.get(lower.get("donor_id",""),"Donor_ID"): "Donor_ID",
-            mapping.get(lower.get("project_id",""),"Project_ID"): "Project_ID",
-            mapping.get(lower.get("score",""),"Score"): "Score"
-        })
-        interactions["Donor_ID"] = interactions["Donor_ID"].apply(norm_id_dnr)
-        interactions["Project_ID"] = interactions["Project_ID"].astype(str).str.strip().str.upper()
-        interactions["Score"] = pd.to_numeric(interactions["Score"], errors="coerce").fillna(0)
-
-    # Basic cleaning
+    # clean projects
+    projects.columns = [c.strip().lower() for c in projects.columns]
+    if "project_id" not in projects.columns:
+        # try fallback names
+        for alt in ["projectid","pid","item_id","itemid","id"]:
+            if alt in projects.columns:
+                projects.rename(columns={alt:"project_id"}, inplace=True)
+                break
     projects["project_id"] = projects["project_id"].astype(str).str.strip().str.upper()
-    projects["funding_target"] = pd.to_numeric(projects["funding_target"], errors="coerce").fillna(projects["funding_target"].median())
-    projects["popularity"]     = pd.to_numeric(projects.get("popularity",0), errors="coerce").fillna(0)
+    projects["funding_target"] = pd.to_numeric(projects.get("funding_target", np.nan), errors="coerce")
+    if projects["funding_target"].isna().all():
+        projects["funding_target"] = 0
+    projects["funding_target"].fillna(projects["funding_target"].median(), inplace=True)
+    projects["popularity"] = pd.to_numeric(projects.get("popularity", 0), errors="coerce").fillna(0)
+
+    # ---- interactions (optional)
+    if inter_path:
+        interactions_raw = pd.read_csv(inter_path)
+        # make a lower->original map
+        lower_map = {c.strip().lower(): c for c in interactions_raw.columns}
+
+        # candidates for each role
+        donor_keys   = ["donor_id","donor","user_id","user","uid","d_id","dnr","dnr_id"]
+        project_keys = ["project_id","project","item_id","item","iid","p_id","pid"]
+        score_keys   = ["score","rating","value","rank","est","r"]
+
+        def pick(cols, key_list):
+            for k in key_list:
+                if k in cols: return cols[k]
+            return None
+
+        d_col = pick(lower_map, donor_keys)
+        p_col = pick(lower_map, project_keys)
+        s_col = pick(lower_map, score_keys)
+
+        if d_col is None or p_col is None:
+            # show what we saw to aid debugging
+            raise ValueError(f"Could not standardize interactions columns. Found: {list(interactions_raw.columns)}")
+
+        interactions = interactions_raw.rename(columns={d_col:"Donor_ID", p_col:"Project_ID"})
+        if s_col and s_col not in ["Score"]:
+            interactions.rename(columns={s_col:"Score"}, inplace=True)
+        if "Score" not in interactions.columns:
+            interactions["Score"] = 1.0  # default if not provided
+
+        # normalize values
+        interactions["Donor_ID"]   = interactions["Donor_ID"].apply(norm_id_dnr)
+        interactions["Project_ID"] = interactions["Project_ID"].astype(str).str.strip().str.upper()
+        interactions["Score"]      = pd.to_numeric(interactions["Score"], errors="coerce").fillna(0.0)
+    else:
+        interactions = pd.DataFrame(columns=["Donor_ID","Project_ID","Score"])
 
     return donors, projects, interactions
 
