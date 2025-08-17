@@ -8,29 +8,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import MinMaxScaler
 import joblib
 
-# -------------------------- Page & cache control --------------------------
-st.set_page_config(page_title="Diaspora Donor Recommender", page_icon="🤝", layout="wide")
-
-APP_VERSION = "2025-08-17-streamlit-cloud-artifacts"
-if st.session_state.get("_app_version") != APP_VERSION:
-    try:
-        st.cache_data.clear()
-        st.cache_resource.clear()
-    except Exception:
-        pass
-    st.session_state["_app_version"] = APP_VERSION
-    
-# Inline CF training toggle (off on Streamlit Cloud)
-# On local dev, set:  export ALLOW_INLINE_TRAIN=1  (or on Windows: set ALLOW_INLINE_TRAIN=1)
-import os
-ALLOW_INLINE_TRAIN = os.environ.get("ALLOW_INLINE_TRAIN", "0") == "1"
-
-# Root folder (repo-local)
-BASE = "artifacts"
-os.makedirs(BASE, exist_ok=True)
-OUTPUT_DIR = os.path.join(BASE, "outputs")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
 # -------------------------- Small helpers --------------------------
 FIG_XS = (2.0, 1.3)
 FIG_S  = (2.4, 1.5)
@@ -76,7 +53,7 @@ def status_dot_html(state):
         color, label = "#f59e0b", "Selective"
     return f'<span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:{color};display:inline-block;"></span>{label}</span>'
 
-def has_rows(df):
+def has_rows(df) -> bool:
     return isinstance(df, pd.DataFrame) and not df.empty
 
 def safe_df(df):
@@ -92,6 +69,29 @@ def ensure_cols(df, cols, name="df"):
 
 def load_csv_or_parquet(path):
     return pd.read_csv(path) if path.endswith(".csv") else pd.read_parquet(path)
+
+# -------------------------- Page & cache control --------------------------
+st.set_page_config(page_title="Diaspora Donor Recommender", page_icon="🤝", layout="wide")
+
+APP_VERSION = "2025-08-17-streamlit-cloud-artifacts"
+if st.session_state.get("_app_version") != APP_VERSION:
+    try:
+        st.cache_data.clear()
+        st.cache_resource.clear()
+    except Exception:
+        pass
+    st.session_state["_app_version"] = APP_VERSION
+    
+# Inline CF training toggle (off on Streamlit Cloud)
+# On local dev, set:  export ALLOW_INLINE_TRAIN=1  (or on Windows: set ALLOW_INLINE_TRAIN=1)
+import os
+ALLOW_INLINE_TRAIN = os.environ.get("ALLOW_INLINE_TRAIN", "0") == "1"
+
+# Root folder (repo-local)
+BASE = "artifacts"
+os.makedirs(BASE, exist_ok=True)
+OUTPUT_DIR = os.path.join(BASE, "outputs")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # -------------------------- Data loading --------------------------
 @st.cache_data(show_spinner=False)
@@ -177,7 +177,6 @@ def load_core(base: str):
         interactions = pd.DataFrame(columns=["Donor_ID", "Project_ID", "Score"])
 
     return donors, projects, interactions
-
 
 @st.cache_resource(show_spinner=False)
 def load_artifacts(base):
