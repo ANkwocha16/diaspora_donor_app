@@ -456,7 +456,7 @@ with right:
         st.session_state["recs"] = recs if err is None else pd.DataFrame()
         if err: st.warning(err)
 
-        recs = st.session_state.get("recs", pd.DataFrame())
+    recs = st.session_state.get("recs", pd.DataFrame())
     if not has_rows(recs):
         st.info("Click **Get recommendations**.")
     else:
