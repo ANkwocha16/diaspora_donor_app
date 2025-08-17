@@ -81,21 +81,16 @@ def status_dot_html(state):
     return f'<span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:{color};display:inline-block;"></span>{label}</span>'
 
 # ---------------- Robust ID normalization ----------------
+# ID normalizer: unify cases like PRJ1234 -> PR1234, keep DNR####, strip spaces
 def _std_id(x: object) -> str:
-    """
-    Normalize any id to uppercase string with zero padding when it looks like
-    DNR### or PR####. Works for 'dnr1'->'DNR0001', 'pr7'->'PR0007', and leaves
-    other ids untouched but uppercased.
-    """
-    s = str(x).strip().upper()
-    m = re.match(r'^(DNR|DR|DONOR)[^\d]*?(\d+)$', s)
-    if m:
-        return f'DNR{int(m.group(2)):04d}'
-    m = re.match(r'^(PR|PROJ|PROJECT)[^\d]*?(\d+)$', s)
-    if m:
-        return f'PR{int(m.group(2)):04d}'
-    return s
-
+   s = str(x).strip().upper()
+   # fix common project prefix variant (PRJ#### -> PR####)
+   if s.startswith("PRJ"):
+       s = "PR" + s[3:]
+   # remove separators
+   s = s.replace(" ", "").replace("-", "").replace("_", "")
+   return s
+    
 # ---------------- Data loaders ----------------
 def _read_interactions_any(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
@@ -743,6 +738,10 @@ with tab_diag:
     st.write(f"CF estimates present: {'✅' if (cf_estimates is not None and not cf_estimates.empty) else '❌'}")
     st.write(f"Donors with history: {interactions['donor_id'].nunique() if has_rows(interactions) else 0}")
     st.write(f"Projects with history: {interactions['project_id'].nunique() if has_rows(interactions) else 0}")
+    st.write("Sample IDs after normalization:")
+    st.code("Projects: " + ", ".join(projects['project_id'].head(5).tolist()), language="text")
+    if not interactions.empty:
+        st.code("History:  " + ", ".join(interactions['project_id'].head(5).tolist()), language="text")
 
 # ---------------- REGISTER DONOR ----------------
 with tab_reg:
