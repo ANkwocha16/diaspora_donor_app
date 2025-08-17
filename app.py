@@ -156,51 +156,35 @@ def load_core(base):
     projects["funding_target"] = pd.to_numeric(projects["funding_target"], errors="coerce").fillna(projects["funding_target"].median())
     projects["popularity"]     = pd.to_numeric(projects["popularity"], errors="coerce").fillna(0.0)
 
-    # ---------- interactions (robust) ----------
-    interactions = pd.DataFrame(columns=["donor_id","project_id","score"])
-    inter_path = None
-    for n in [
-        "interactions.csv",
-        "synthetic_interactions_5000x2000.csv",
-        "ratings_5000x2000.csv",
-        "ratings.csv",
-    ]:
-        p = os.path.join(base, n)
-        if os.path.exists(p):
-            inter_path = p
-            break
-
-    if inter_path:
-        inter = pd.read_csv(inter_path)
-
-        raw_cols = [str(c).strip() for c in inter.columns]
-        lower_map = {c.lower(): c for c in raw_cols}
-
-        def pick(*cands):
-            for cc in cands:
-                if cc in lower_map:
-                    return lower_map[cc]
-            return None
-
-        dcol = pick("donor_id","user_id","user","donor")
-        pcol = pick("project_id","item_id","item","project")
-        scol = pick("score","rating","value")
-
-        if dcol is not None and pcol is not None:
-            inter = inter.rename(columns={dcol:"donor_id", pcol:"project_id"})
-            inter["donor_id"]   = inter["donor_id"].astype(str).map(_std_id)
-            inter["project_id"] = inter["project_id"].astype(str).map(_std_id)
-
-            if scol:
-                inter = inter.rename(columns={scol:"score"})
-                inter["score"] = pd.to_numeric(inter["score"], errors="coerce")
-                inter["score"] = inter["score"].fillna(inter["score"].median() if inter["score"].notna().any() else 1.0)
-            else:
-                inter["score"] = 1.0
-
-            inter = inter.dropna(subset=["donor_id","project_id"])
-            inter = inter.drop_duplicates(subset=["donor_id","project_id"], keep="last")
-            interactions = inter[["donor_id","project_id","score"]]
+    # ---------- interactions (optional; supports interactions.csv or ratings*.csv)
+   interactions = pd.DataFrame(columns=["donor_id","project_id","score"])
+   inter_path = None
+   for n in ["interactions.csv", "ratings_5000x2000.csv", "ratings.csv", "synthetic_interactions_5000x2000.csv"]:
+       p = os.path.join(base, n)
+       if os.path.exists(p):
+           inter_path = p
+           break
+   if inter_path:
+       inter = pd.read_csv(inter_path)
+       # Canonicalize column names to lower-case first
+       inter.columns = [c.strip().lower() for c in inter.columns]
+       # Flexible column picking
+       dcol = "donor_id"   if "donor_id"   in inter.columns else ("user_id" if "user_id" in inter.columns else None)
+       pcol = "project_id" if "project_id" in inter.columns else ("item_id" if "item_id" in inter.columns else None)
+       scol = "score"      if "score"      in inter.columns else ("rating"  if "rating"  in inter.columns else None)
+       if dcol and pcol:
+           inter = inter.rename(columns={dcol:"donor_id", pcol:"project_id"})
+           # Standardize IDs (match how recommendations are built)
+           inter["donor_id"]   = inter["donor_id"].astype(str).str.strip().str.upper()
+           inter["project_id"] = inter["project_id"].astype(str).str.strip().str.upper()
+           # Score: if none, assume implicit positive feedback
+           if scol:
+               inter = inter.rename(columns={scol:"score"})
+               inter["score"] = pd.to_numeric(inter["score"], errors="coerce").fillna(0.0)
+           else:
+               inter["score"] = 1.0
+           # Keep only the three columns
+           interactions = inter[["donor_id","project_id","score"]].dropna(subset=["donor_id","project_id"])
 
     return donors, projects, interactions
 
@@ -349,69 +333,86 @@ def get_recs(donor_id, donors, projects, interactions, cf_estimates, vecs,
 
 # --------------- Metrics ---------------
 def average_precision_at_k(relevant, ranked_ids, k):
-    if k <= 0: return 0.0
-    hits = 0; s = 0.0
-    for i, pid in enumerate(ranked_ids[:k], start=1):
-        if pid in relevant:
-            hits += 1
-            s += hits / i
-    return 0.0 if hits==0 else s / min(len(relevant), k)
-
-def compute_metrics_for_donor(donor_id, recs, interactions, projects, cf_estimates, k=5, thr_mode="Median per donor"):
-    out = dict(precision_k=0.0, recall_k=0.0, map_k=0.0, coverage_k=0.0, diversity_k=0.0, novelty=0.0, mae=0.0, mse=0.0, rmse=0.0)
-    if not has_rows(recs): return out
-    K = max(1, int(k))
-    top_ids = recs["project_id"].astype(str).map(_std_id).tolist()[:K]
-
-    # novelty (lower popularity => higher novelty)
-    pop = projects.set_index("project_id").reindex(top_ids)["popularity"].fillna(0.0).to_numpy()
-    if pop.size:
-        if pop.max()==pop.min():
-            nov = 0.80
-        else:
-            pnorm = (pop - pop.min())/(pop.max()-pop.min())
-            nov = float(1.0 - pnorm.mean())
-        out["novelty"] = nov
-
-    # diversity@k (unique sectors over K)
-    secs = projects.set_index("project_id").reindex(top_ids)["sector_focus"].fillna("").tolist()
-    uniq = len(set([s for s in secs if s]))
-    out["diversity_k"] = uniq / len(top_ids) if top_ids else 0.0
-
-    if not has_rows(interactions): return out
-
-    hist = interactions[interactions["donor_id"]==_std_id(donor_id)]
-    if hist.empty: return out
-
-    seen = set(hist["project_id"].astype(str).map(_std_id))
-    out["coverage_k"] = (sum(1 for pid in top_ids if pid in seen) / len(top_ids)) if top_ids else 0.0
-
-    if thr_mode == "Any positive (>0)":
-        rel = set(hist.loc[hist["score"] > 0, "project_id"].astype(str).map(_std_id))
-    else:
-        thr = float(hist["score"].median())
-        rel = set(hist.loc[hist["score"] >= thr, "project_id"].astype(str).map(_std_id))
-
-    hits = sum(1 for pid in top_ids if pid in rel)
-    out["precision_k"] = hits / K
-    out["recall_k"]    = hits / (len(rel) if len(rel)>0 else 1.0)
-    out["map_k"]       = average_precision_at_k(rel, top_ids, K)
-
-    # Error metrics vs. CF predictions (on overlap)
-    if cf_estimates is not None and not cf_estimates.empty:
-        dcf = cf_estimates[cf_estimates["donor_id"]==_std_id(donor_id)][["project_id","est"]].copy()
-        dcf["project_id"] = dcf["project_id"].map(_std_id)
-        join = hist[["project_id","score"]].copy()
-        join["project_id"] = join["project_id"].map(_std_id)
-        m = dcf.merge(join, on="project_id", how="inner")
-        if not m.empty:
-            y_true = m["score"].astype(float).to_numpy()
-            y_pred = m["est"].astype(float).to_numpy()
-            err = y_pred - y_true
-            out["mae"]  = float(np.mean(np.abs(err)))
-            out["mse"]  = float(np.mean(err**2))
-            out["rmse"] = float(np.sqrt(out["mse"]))
-    return out
+   if k <= 0: return 0.0
+   hits = 0; s = 0.0
+   for i, pid in enumerate(ranked_ids[:k], start=1):
+       if pid in relevant:
+           hits += 1
+           s += hits / i
+   return 0.0 if hits == 0 else s / min(len(relevant), k)
+def compute_metrics_for_donor(donor_id, recs, interactions, projects, cf_estimates,
+                             k=5, thr_mode="Median per donor"):
+   """
+   Returns: metrics_dict, diag_dict
+     metrics: precision_k, recall_k, map_k, coverage_k, diversity_k, novelty, mae, mse, rmse
+     diag:    n_hist, n_topk, n_rel, hits, overlap_size, n_cf
+   """
+   M = dict(precision_k=0.0, recall_k=0.0, map_k=0.0, coverage_k=0.0,
+            diversity_k=0.0, novelty=0.0, mae=0.0, mse=0.0, rmse=0.0)
+   D = dict(n_hist=0, n_topk=0, n_rel=0, hits=0, overlap_size=0, n_cf=0)
+   if not has_rows(recs):
+       return M, D
+   # Canonicalize IDs in top-k
+   K = max(1, int(k))
+   top_ids = recs["project_id"].astype(str).str.strip().str.upper().tolist()[:K]
+   D["n_topk"] = len(top_ids)
+   # Novelty (low popularity -> high novelty)
+   pop = projects.set_index("project_id")["popularity"]
+   pop.index = pop.index.astype(str).str.strip().str.upper()
+   pop_vec = pd.Series(top_ids).map(pop).fillna(0.0).to_numpy()
+   if pop_vec.size:
+       if pop_vec.max() == pop_vec.min():
+           M["novelty"] = 0.60
+       else:
+           pnorm = (pop_vec - pop_vec.min()) / (pop_vec.max() - pop_vec.min())
+           M["novelty"] = float(1.0 - pnorm.mean())
+   # Diversity@K (unique sectors among top-k)
+   sec = projects.set_index("project_id")["sector_focus"]
+   sec.index = sec.index.astype(str).str.strip().str.upper()
+   uniq = len(set(pd.Series(top_ids).map(sec).fillna("").tolist()) - {""})
+   M["diversity_k"] = uniq / max(1, len(top_ids))
+   # Need history for the rest
+   if not has_rows(interactions):
+       return M, D
+   d_id = str(donor_id).strip().upper()
+   hist = interactions[interactions["donor_id"] == d_id].copy()
+   D["n_hist"] = len(hist)
+   if hist.empty:
+       return M, D
+   # Build relevance set
+   hist["project_id"] = hist["project_id"].astype(str).str.strip().str.upper()
+   hist["score"] = pd.to_numeric(hist["score"], errors="coerce").fillna(0.0)
+   if thr_mode == "Any positive (>0)":
+       rel = set(hist.loc[hist["score"] > 0, "project_id"].tolist())
+   else:  # "Median per donor"
+       thr = float(hist["score"].median())
+       rel = set(hist.loc[hist["score"] >= thr, "project_id"].tolist())
+   D["n_rel"] = len(rel)
+   # Overlap & hits
+   top_set = set(top_ids)
+   overlap = top_set & set(hist["project_id"])
+   D["overlap_size"] = len(overlap)
+   hits = sum(1 for pid in top_ids if pid in rel)
+   D["hits"] = hits
+   # Coverage / Precision / Recall / MAP
+   M["coverage_k"] = len(overlap) / max(1, len(top_ids))
+   M["precision_k"] = hits / max(1, K)
+   M["recall_k"] = hits / max(1, len(rel))
+   M["map_k"] = average_precision_at_k(rel, top_ids, K)
+   # Error metrics vs CF predictions (on overlap)
+   if cf_estimates is not None and not cf_estimates.empty:
+       dcf = cf_estimates[cf_estimates["donor_id"].astype(str).str.strip().str.upper() == d_id][["project_id","est"]].copy()
+       dcf["project_id"] = dcf["project_id"].astype(str).str.strip().str.upper()
+       D["n_cf"] = len(dcf)
+       join = hist[["project_id","score"]].merge(dcf, on="project_id", how="inner")
+       if not join.empty:
+           y_true = join["score"].astype(float).to_numpy()
+           y_pred = join["est"].astype(float).to_numpy()
+           err = y_pred - y_true
+           M["mae"]  = float(np.mean(np.abs(err)))
+           M["mse"]  = float(np.mean(err**2))
+           M["rmse"] = float(np.sqrt(M["mse"]))
+   return M, D
 
 # --------------- Load data & vectors ---------------
 donors, projects, interactions = load_core(BASE)
@@ -659,14 +660,13 @@ with tab_met:
         st.metric("MAP@K",       pct(m["map_k"]))
         st.metric("Diversity@K", pct(m["diversity_k"]))
         st.metric("RMSE",        num3(m["rmse"]))
-
-    # quick diag line for your dissertation write-up
-    if has_rows(r):
-        hist_n = len(interactions[interactions["donor_id"]==_std_id(sel_id)]) if has_rows(interactions) else 0
-        cf_n   = len(cf_estimates[cf_estimates["donor_id"]==_std_id(sel_id)]) if (cf_estimates is not None and not cf_estimates.empty) else 0
-        st.caption(f"Diagnostics — history rows: {hist_n}, CF rows: {cf_n}, hits in top-K: {int(m['precision_k']*int(k))}, CF×history overlap used for error metrics may be small.")
-    else:
-        st.info("Generate recommendations on Home first.")
+    # ---- diagnostics line (tiny helper to understand zeros)
+    diag = D  # if you named the second return value D above
+    st.caption(
+       "Diagnostics — history rows: "
+       f"{diag['n_hist']}, CF rows: {diag['n_cf']}, hits in top-K: "
+       f"{diag['hits']}, overlap size (any history): {diag['overlap_size']}, relevant items: {diag['n_rel']}."
+   )
 
 # --------------- WHY THESE PICKS ---------------
 with tab_why:
