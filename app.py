@@ -1,9 +1,10 @@
-# app.py — Diaspora Donor Recommender (Streamlit Cloud, artifacts-first)
-# - Two-pane Home (left: donor & prefs; right: recommendations)
-# - ✅ tick for donors with interactions
-# - Precomputed CF from artifacts/cf_estimates.csv(.gz) (no Surprise)
-# - Robust interactions normalization; metrics compute correctly
-# - Small, clean charts; tabs across top
+# app.py — Diaspora Donor Recommender (metrics fixed, artifacts-first, two-pane Home)
+# - Robust loaders for: donors_5000.csv / donors.csv, projects_2000.csv / projects.csv,
+#   interactions.csv / ratings_5000x2000.csv / ratings.csv, cf_estimates.csv(.gz)
+# - Precomputed CF only (no Surprise)
+# - Two-pane Home + ✅ tick for donors with history
+# - Metrics computed for the chosen model source (Hybrid / Rule / Content / CF)
+# - Small charts (matplotlib), Streamlit Cloud friendly
 
 import os, re, json, time
 import numpy as np
@@ -15,7 +16,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 # ---------------- Page config & cache bump ----------------
 st.set_page_config(page_title="Diaspora Donor Recommender", page_icon="🤝", layout="wide")
-APP_VERSION = "2025-08-17-two-pane-metrics-fixed-v2"
+APP_VERSION = "2025-08-17-metrics-fixed-v2"
 if st.session_state.get("__app_version") != APP_VERSION:
     try:
         st.cache_data.clear(); st.cache_resource.clear()
@@ -25,16 +26,20 @@ if st.session_state.get("__app_version") != APP_VERSION:
 
 BASE = "artifacts"
 os.makedirs(BASE, exist_ok=True)
-OUTPUT_DIR = os.path.join(BASE, "outputs"); os.makedirs(OUTPUT_DIR, exist_ok=True)
+OUTPUT_DIR = os.path.join(BASE, "outputs")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ---------------- Small helpers ----------------
-FIG_XS = (2.2, 1.6)   # tiny
+FIG_XS = (2.2, 1.6)   # very small
 FIG_S  = (2.8, 1.9)   # small
 
 def make_small_axes(size="xs"):
     fig, ax = plt.subplots(figsize=FIG_XS if size=="xs" else FIG_S)
     ax.tick_params(labelsize=8)
     return fig, ax
+
+def _std_id(x: str) -> str:
+    return str(x).strip().upper()
 
 def parse_multi(val):
     if val is None: return []
@@ -79,93 +84,13 @@ def status_dot_html(state):
         color, label = "#f59e0b", "Selective"
     return f'<span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:{color};display:inline-block;"></span>{label}</span>'
 
-def _std_id(x):
-    return str(x).strip().upper()
-
-# --------------- Data loaders (robust) ---------------
-@st.cache_data(show_spinner=False)
-def load_core(base):
-    donors_path   = os.path.join(base, "donors_5000.csv") if os.path.exists(os.path.join(base,"donors_5000.csv")) \
-                    else os.path.join(base, "donors.csv")
-    projects_path = os.path.join(base, "projects_2000.csv") if os.path.exists(os.path.join(base,"projects_2000.csv")) \
-                    else os.path.join(base, "projects.csv")
-
-    donors = pd.read_csv(donors_path)
-    projects = pd.read_csv(projects_path)
-
-    donors.columns   = [c.strip().lower() for c in donors.columns]
-    projects.columns = [c.strip().lower() for c in projects.columns]
-
-    if "donor_id" not in donors.columns:
-        for alt in donors.columns:
-            if alt in ("id","donor","user","user_id"):
-                donors = donors.rename(columns={alt:"donor_id"}); break
-    donors["donor_id"] = donors["donor_id"].map(_std_id)
-
-    if "project_id" not in projects.columns:
-        for alt in projects.columns:
-            if alt in ("id","project","item","item_id"):
-                projects = projects.rename(columns={alt:"project_id"}); break
-    projects["project_id"] = projects["project_id"].map(_std_id)
-
-    # required donor columns
-    for col, default in [
-        ("name",""), ("email",""), ("behaviour_type","Active"),
-        ("region_preference",""), ("sector_preference",""),
-        ("preferred_target", np.nan), ("budget_cap", np.nan)
-    ]:
-        if col not in donors.columns:
-            donors[col] = default
-
-    # required project columns
-    for col, default in [
-        ("title",""), ("region",""), ("sector_focus",""),
-        ("organisation_type",""), ("funding_target", np.nan), ("popularity", 0.0)
-    ]:
-        if col not in projects.columns:
-            projects[col] = default
-
-    donors["preferred_target"] = pd.to_numeric(donors["preferred_target"], errors="coerce")
-    donors["budget_cap"]       = pd.to_numeric(donors["budget_cap"], errors="coerce")
-    projects["funding_target"] = pd.to_numeric(projects["funding_target"], errors="coerce").fillna(projects["funding_target"].median())
-    projects["popularity"]     = pd.to_numeric(projects["popularity"], errors="coerce").fillna(0.0)
-
-    # interactions (optional)
-    interactions = pd.DataFrame(columns=["donor_id","project_id","score"])
-    inter_path = None
-    for n in ["interactions.csv", "ratings_5000x2000.csv", "ratings.csv", "synthetic_interactions_5000x2000.csv"]:
-        p = os.path.join(base, n)
-        if os.path.exists(p):
-            inter_path = p
-            break
-
-    if inter_path:
-        inter = pd.read_csv(inter_path)
-        lower = {c.strip().lower(): c for c in inter.columns}
-        def pick(*cands):
-            for cc in cands:
-                if cc in lower: return lower[cc]
-            return None
-
-        dcol = pick("donor_id","user_id","user","donor")
-        pcol = pick("project_id","item_id","item","project")
-        scol = pick("score","rating","value")
-
-        if dcol and pcol:
-            inter = inter.rename(columns={dcol:"donor_id", pcol:"project_id"})
-            inter["donor_id"]   = inter["donor_id"].map(_std_id)
-            inter["project_id"] = inter["project_id"].map(_std_id)
-            if scol:
-                inter = inter.rename(columns={scol:"score"})
-                inter["score"] = pd.to_numeric(inter["score"], errors="coerce").fillna(0.0)
-            else:
-                inter["score"] = 1.0
-            interactions = inter.loc[
-                inter["donor_id"].ne("") & inter["project_id"].ne(""),
-                ["donor_id","project_id","score"]
-            ].copy()
-
-    return donors, projects, interactions
+# ---------------- Loaders ----------------
+def _pick_col(df, *cands):
+    low = {c.lower(): c for c in df.columns}
+    for c in cands:
+        if c.lower() in low:
+            return low[c.lower()]
+    return None
 
 @st.cache_data(show_spinner=False)
 def load_cf_estimates(base):
@@ -173,24 +98,90 @@ def load_cf_estimates(base):
         p = os.path.join(base, name)
         if os.path.exists(p):
             df = pd.read_csv(p)
-            lower = {c.lower(): c for c in df.columns}
-            def col(w):
-                for k,v in lower.items():
-                    if k == w: return v
-                return None
-            dcol = col("donor_id"); pcol = col("project_id")
-            ecol = col("est") or lower.get("prediction")
-            if not dcol or not pcol or not ecol:
+            dcol = _pick_col(df, "donor_id","user","user_id")
+            pcol = _pick_col(df, "project_id","item","item_id")
+            ecol = _pick_col(df, "est","prediction","pred")
+            if not (dcol and pcol and ecol):
                 continue
             df = df.rename(columns={dcol:"donor_id", pcol:"project_id", ecol:"est"})
             df["donor_id"]   = df["donor_id"].map(_std_id)
             df["project_id"] = df["project_id"].map(_std_id)
-            df["est"] = pd.to_numeric(df["est"], errors="coerce")
+            df["est"]        = pd.to_numeric(df["est"], errors="coerce")
             return df.dropna(subset=["donor_id","project_id","est"])
     return None
 
 @st.cache_data(show_spinner=False)
+def load_core(base):
+    # donors / projects
+    donors_path   = os.path.join(base, "donors_5000.csv")   if os.path.exists(os.path.join(base,"donors_5000.csv"))   else os.path.join(base, "donors.csv")
+    projects_path = os.path.join(base, "projects_2000.csv") if os.path.exists(os.path.join(base,"projects_2000.csv")) else os.path.join(base, "projects.csv")
+    donors   = pd.read_csv(donors_path)
+    projects = pd.read_csv(projects_path)
+
+    donors.columns   = [c.strip().lower() for c in donors.columns]
+    projects.columns = [c.strip().lower() for c in projects.columns]
+
+    if "donor_id" not in donors.columns:
+        alt = _pick_col(donors, "donor_id", "id", "donor")
+        if alt: donors = donors.rename(columns={alt:"donor_id"})
+    donors["donor_id"] = donors["donor_id"].map(_std_id)
+
+    if "project_id" not in projects.columns:
+        alt = _pick_col(projects, "project_id", "id", "project")
+        if alt: projects = projects.rename(columns={alt:"project_id"})
+    projects["project_id"] = projects["project_id"].map(_std_id)
+
+    # ensure required
+    for col, default in [
+        ("name",""), ("email",""), ("behaviour_type","Active"),
+        ("region_preference",""), ("sector_preference",""),
+        ("preferred_target", np.nan), ("budget_cap", np.nan),
+    ]:
+        if col not in donors.columns: donors[col] = default
+
+    for col, default in [
+        ("title",""), ("region",""), ("sector_focus",""),
+        ("organisation_type",""), ("funding_target", np.nan), ("popularity", 0.0),
+    ]:
+        if col not in projects.columns: projects[col] = default
+
+    donors["preferred_target"] = pd.to_numeric(donors["preferred_target"], errors="coerce")
+    donors["budget_cap"]       = pd.to_numeric(donors["budget_cap"], errors="coerce")
+    projects["funding_target"] = pd.to_numeric(projects["funding_target"], errors="coerce").fillna(projects["funding_target"].median())
+    projects["popularity"]     = pd.to_numeric(projects["popularity"], errors="coerce").fillna(0.0)
+
+    # interactions (try multiple names)
+    interactions = pd.DataFrame(columns=["donor_id","project_id","score"])
+    inter_path = None
+    for n in ["interactions.csv","synthetic_interactions_5000x2000.csv","ratings_5000x2000.csv","ratings.csv"]:
+        p = os.path.join(base, n)
+        if os.path.exists(p):
+            inter_path = p
+            break
+    if inter_path:
+        inter = pd.read_csv(inter_path)
+        dcol = _pick_col(inter, "donor_id","user_id","user","Donor_ID")
+        pcol = _pick_col(inter, "project_id","item_id","item","Project_ID")
+        scol = _pick_col(inter, "score","rating","value","Score")
+        if dcol and pcol:
+            inter = inter.rename(columns={dcol:"donor_id", pcol:"project_id"})
+            inter["donor_id"]   = inter["donor_id"].map(_std_id)
+            inter["project_id"] = inter["project_id"].map(_std_id)
+            if scol:
+                inter = inter.rename(columns={scol:"score"})
+                inter["score"] = pd.to_numeric(inter["score"], errors="coerce")
+            else:
+                inter["score"] = 1.0
+            # If it looks like 1..5 ratings, scale to 0..1 for MAE/MSE
+            if inter["score"].max() >= 4.0 and inter["score"].min() >= 0.0:
+                inter["score"] = inter["score"] / 5.0
+            interactions = inter[["donor_id","project_id","score"]].dropna(subset=["donor_id","project_id"])
+
+    return donors, projects, interactions
+
+@st.cache_data(show_spinner=False)
 def load_proj_vectors(projects):
+    # If present, use precomputed parquet
     pv_path = os.path.join(BASE, "proj_vectors.parquet")
     if os.path.exists(pv_path):
         pv = pd.read_parquet(pv_path)
@@ -198,7 +189,8 @@ def load_proj_vectors(projects):
         mat = pv[feats].fillna(0).astype(float).values
         ids = pv["project_id"].astype(str).map(_std_id)
         return {"ids": ids, "feats": feats, "mat": mat}
-    # build simple one-hot region/sector
+
+    # Otherwise build simple one-hot from region + sector_focus
     regions = sorted(projects["region"].dropna().unique().tolist())
     sectors = sorted(projects["sector_focus"].dropna().unique().tolist())
     rcols = [f"region_{r}" for r in regions]
@@ -216,7 +208,7 @@ def load_proj_vectors(projects):
     ids = pv["project_id"].astype(str).map(_std_id)
     return {"ids": ids, "feats": feats, "mat": mat}
 
-# ---------------- Recommender core ----------------
+# ---------------- Scoring ----------------
 def build_donor_vec(pref_regions, pref_sectors, feat_cols):
     m = {c:0 for c in feat_cols}
     for r in pref_regions:
@@ -252,11 +244,14 @@ def rule_score(donor_row, proj_row):
     elif "active" in bt:  s *= 1.02
     return s
 
-def get_recs(donor_id, donors, projects, interactions, cf_estimates, vecs,
-             weights=(0.33,0.34,0.33), ethical=True, topk=10,
-             override_regions=None, override_sectors=None):
+def compute_all_scores(
+    donor_id, donors, projects, interactions, cf_estimates, vecs,
+    weights=(0.33,0.34,0.33), ethical=True,
+    override_regions=None, override_sectors=None
+):
     dser = donors.loc[donors["donor_id"]==donor_id]
-    if dser.empty: return pd.DataFrame(), "Unknown donor_id"
+    if dser.empty:
+        return pd.DataFrame(), "Unknown donor_id"
     drow = dser.iloc[0].to_dict()
 
     pref_regions = override_regions if override_regions is not None else parse_multi(drow.get("region_preference"))
@@ -264,23 +259,23 @@ def get_recs(donor_id, donors, projects, interactions, cf_estimates, vecs,
 
     cand = projects.copy()
 
-    # rule
+    # Rule
     cand["rule_score"] = [rule_score(drow, r) for _, r in cand.iterrows()]
     cand = normalize(cand, "rule_score")
 
-    # content (cosine)
+    # Content
     dv = build_donor_vec(pref_regions, pref_sectors, vecs["feats"])
     pid_to_idx = {pid:i for i,pid in enumerate(vecs["ids"])}
     idxs = [pid_to_idx.get(pid, None) for pid in cand["project_id"].map(_std_id)]
     proj_mat = np.zeros((len(cand), len(vecs["feats"])), dtype=float)
-    valid_rows = [i for i,x in enumerate(idxs) if x is not None]
+    valid_rows = [i for i,ok in enumerate(idxs) if ok is not None]
     if valid_rows:
         proj_mat[valid_rows,:] = vecs["mat"][np.array([idxs[i] for i in valid_rows])]
     cos = cosine_similarity(dv, proj_mat).ravel()
     cand["cosine_score"] = cos
     cand = normalize(cand, "cosine_score")
 
-    # CF from precomputed estimates
+    # CF (precomputed)
     if cf_estimates is not None and not cf_estimates.empty:
         donor_str = _std_id(donor_id)
         cf_slice = cf_estimates[cf_estimates["donor_id"]==donor_str][["project_id","est"]].rename(columns={"est":"cf_score"})
@@ -293,7 +288,7 @@ def get_recs(donor_id, donors, projects, interactions, cf_estimates, vecs,
         cand["cf_score"] = cand["cosine_score"]
         cand["cf_score_norm"] = cand["cosine_score_norm"]
 
-    # Ethical AI: down-weight top 10% most popular
+    # Ethical penalty on heavy-popularity items
     if ethical and "popularity" in cand.columns and len(cand) > 0:
         p90 = cand["popularity"].quantile(0.90)
         penal = (cand["popularity"] >= p90).astype(float) * 0.15
@@ -308,7 +303,7 @@ def get_recs(donor_id, donors, projects, interactions, cf_estimates, vecs,
         w_cf  *cand["cf_score_norm"]
     ) * cand["ethical_adj"]
 
-    # why text
+    # Why text (short)
     pr = set(pref_regions); ps = set(pref_sectors)
     why = []
     for _, r in cand.iterrows():
@@ -320,9 +315,14 @@ def get_recs(donor_id, donors, projects, interactions, cf_estimates, vecs,
         why.append("; ".join(parts) if parts else "Strong blended score")
     cand["why"] = why
 
+    return cand, None
+
+def get_recs(*args, topk=10, **kwargs):
+    cand, err = compute_all_scores(*args, **kwargs)
+    if err: return pd.DataFrame(), err
     return cand.sort_values("hybrid_score", ascending=False).head(topk).reset_index(drop=True), None
 
-# --------------- Metrics ---------------
+# ---------------- Metrics ----------------
 def average_precision_at_k(relevant, ranked_ids, k):
     if k <= 0: return 0.0
     hits = 0; s = 0.0
@@ -332,38 +332,62 @@ def average_precision_at_k(relevant, ranked_ids, k):
             s += hits / i
     return 0.0 if hits==0 else s / min(len(relevant), k)
 
-def compute_metrics_for_donor(donor_id, recs, interactions, projects, cf_estimates, k=5, thr_mode="Any positive (>0)"):
-    out = dict(precision_k=0.0, recall_k=0.0, map_k=0.0, coverage_k=0.0, diversity_k=0.0, novelty=0.0, mae=0.0, mse=0.0, rmse=0.0)
-    if not has_rows(recs): return out
-    K = max(1, int(k))
-    top_ids = recs["project_id"].astype(str).map(_std_id).tolist()[:K]
+def compute_metrics(
+    donor_id, donors, projects, interactions, cf_estimates, vecs,
+    model_source="Hybrid", k=5, thr_mode="Median per donor",
+    weights=(0.33,0.34,0.33), ethical=True
+):
+    out = dict(
+        precision_k=0.0, recall_k=0.0, map_k=0.0,
+        coverage_k=0.0, diversity_k=0.0, novelty=0.0,
+        mae=0.0, mse=0.0, rmse=0.0
+    )
 
-    # novelty
+    # Predict for ALL projects (not just top-10) so we can compute error metrics
+    cand, err = compute_all_scores(
+        donor_id, donors, projects, interactions, cf_estimates, vecs,
+        weights=weights, ethical=ethical
+    )
+    if err or not has_rows(cand):
+        return out
+
+    # Choose score column
+    col_map = {
+        "Hybrid": "hybrid_score",
+        "Rule": "rule_score_norm",
+        "Content": "cosine_score_norm",
+        "CF": "cf_score_norm",
+    }
+    scol = col_map.get(model_source, "hybrid_score")
+
+    # Top-K list
+    cand = cand.sort_values(scol, ascending=False).reset_index(drop=True)
+    top_ids = cand["project_id"].astype(str).map(_std_id).tolist()[:max(1,int(k))]
+
+    # Novelty (lower popularity => higher novelty)
     pop = projects.set_index("project_id").reindex(top_ids)["popularity"].fillna(0.0).to_numpy()
     if pop.size:
-        if pop.max()==pop.min():
-            nov = 0.80
+        if pop.max() == pop.min():
+            out["novelty"] = 0.80
         else:
             pnorm = (pop - pop.min())/(pop.max()-pop.min())
-            nov = float(1.0 - pnorm.mean())
-        out["novelty"] = nov
+            out["novelty"] = float(1.0 - pnorm.mean())
 
-    # diversity@k
+    # Diversity@K (unique sectors / K)
     secs = projects.set_index("project_id").reindex(top_ids)["sector_focus"].fillna("").tolist()
     uniq = len(set([s for s in secs if s]))
     out["diversity_k"] = uniq / len(top_ids) if top_ids else 0.0
 
-    # need interactions for rest
+    # Need interactions for the rest
     if not has_rows(interactions): return out
-
     hist = interactions[interactions["donor_id"]==_std_id(donor_id)]
     if hist.empty: return out
 
-    # coverage@k
+    # Coverage@K
     seen = set(hist["project_id"].astype(str).map(_std_id))
     out["coverage_k"] = (sum(1 for pid in top_ids if pid in seen) / len(top_ids)) if top_ids else 0.0
 
-    # relevant set
+    # Relevance set
     if thr_mode == "Any positive (>0)":
         rel = set(hist.loc[hist["score"] > 0, "project_id"].astype(str).map(_std_id))
     else:
@@ -371,46 +395,48 @@ def compute_metrics_for_donor(donor_id, recs, interactions, projects, cf_estimat
         rel = set(hist.loc[hist["score"] >= thr, "project_id"].astype(str).map(_std_id))
 
     hits = sum(1 for pid in top_ids if pid in rel)
+    K = max(1, int(k))
     out["precision_k"] = hits / K
     out["recall_k"]    = hits / (len(rel) if len(rel)>0 else 1.0)
     out["map_k"]       = average_precision_at_k(rel, top_ids, K)
 
-    # Error metrics vs CF predictions (on overlap)
-    if cf_estimates is not None and not cf_estimates.empty:
-        dcf = cf_estimates[cf_estimates["donor_id"]==_std_id(donor_id)][["project_id","est"]].copy()
-        dcf["project_id"] = dcf["project_id"].map(_std_id)
-        join = hist[["project_id","score"]].copy()
-        join["project_id"] = join["project_id"].map(_std_id)
-        m = dcf.merge(join, on="project_id", how="inner")
-        if not m.empty:
-            y_true = m["score"].astype(float).to_numpy()
-            y_pred = m["est"].astype(float).to_numpy()
-            err = y_pred - y_true
-            out["mae"]  = float(np.mean(np.abs(err)))
-            out["mse"]  = float(np.mean(err**2))
-            out["rmse"] = float(np.sqrt(out["mse"]))
+    # ------ Error metrics (MAE/MSE/RMSE) ------
+    # Use the CHOSEN model's predicted (normalized) score as y_pred in [0..1]
+    # Compare against donor's history 'score' (already scaled to 0..1 for ratings).
+    pred = cand.set_index("project_id")[[scol]].rename(columns={scol:"pred"}).copy()
+    hist2 = hist.copy()
+    hist2["project_id"] = hist2["project_id"].map(_std_id)
+    m = hist2.merge(pred, left_on="project_id", right_index=True, how="inner")
+    if not m.empty:
+        y_true = m["score"].astype(float).to_numpy()
+        y_pred = m["pred"].astype(float).to_numpy()
+        err = y_pred - y_true
+        out["mae"]  = float(np.mean(np.abs(err)))
+        out["mse"]  = float(np.mean(err**2))
+        out["rmse"] = float(np.sqrt(out["mse"]))
+
     return out
 
-# --------------- Load data & vectors ---------------
+# ---------------- Load data & vectors ----------------
 donors, projects, interactions = load_core(BASE)
-cf_estimates = load_cf_estimates(BASE)
 proj_vecs_obj = load_proj_vectors(projects)
+cf_estimates = load_cf_estimates(BASE)
 
-# --------------- Header ---------------
+# ---------------- Header ----------------
 st.title("🤝 Diaspora Donor Recommender System")
-st.caption("Hybrid (Rule + Content Cosine + CF via precomputed SVD). Ethical AI down-weights over-exposed items. Small charts for clarity.")
+st.caption("Hybrid (Rule + Content Cosine + CF via precomputed SVD). Ethical AI down-weights over-exposed items. Small charts throughout.")
 
 with st.expander("Dataset & model status", expanded=False):
     st.write(f"Donors: **{len(donors):,}**, Projects: **{len(projects):,}**, Interactions: **{len(interactions):,}**")
     st.write("CF source:", "precomputed estimates ✅" if (cf_estimates is not None and not cf_estimates.empty) else "not found ❌")
 
-# --------------- Tabs ---------------
+# ---------------- Tabs ----------------
 tab_home, tab_ins, tab_prog, tab_met, tab_why, tab_exp, tab_cmp, tab_diag, tab_reg = st.tabs([
     "Home", "Insights", "Donor progress", "Metrics", "Why these picks",
     "Explore projects", "Compare algorithms", "Diagnostics", "Register donor"
 ])
 
-# --------------- HOME (two-pane) ---------------
+# ---------------- HOME (two-pane) ----------------
 with tab_home:
     left, right = st.columns([0.40, 0.60], gap="large")
 
@@ -429,17 +455,15 @@ with tab_home:
                     axis=1
                 )
             ]
-        # ✅ mark donors with history (force uppercase)
-        if has_rows(interactions):
-            hist_ids = set(interactions["donor_id"].astype(str).str.upper().unique())
-        else:
-            hist_ids = set()
 
+        # ✅ tick donors with history
+        hist_ids = set(interactions["donor_id"].unique()) if has_rows(interactions) else set()
         ddf["label"] = ddf.apply(
             lambda r: f"{r['donor_id']} - {r.get('name','')}" + (" ✅" if r['donor_id'] in hist_ids else ""),
             axis=1
         )
         options = ddf["label"].tolist() or [f"{donors.iloc[0]['donor_id']} - {donors.iloc[0].get('name','')}"]
+
         default_index = 0
         if "selected_donor_id" in st.session_state:
             lab = ddf.loc[ddf["donor_id"]==st.session_state["selected_donor_id"], "label"]
@@ -447,14 +471,13 @@ with tab_home:
                 default_index = options.index(lab.iloc[0])
 
         donor_label = st.selectbox("Choose donor", options, index=default_index)
-        donor_id = donor_label.split(" - ")[0].strip().upper()
+        donor_id = donor_label.split(" - ")[0].strip()
         st.session_state["selected_donor_id"] = donor_id
 
+        # donor card
         drow = donors.loc[donors["donor_id"]==donor_id].iloc[0]
         pref_regions_default = parse_multi(drow.get("region_preference"))
         pref_sectors_default = parse_multi(drow.get("sector_preference"))
-
-        # donor card
         st.markdown(f"""
         <div style="border:1px solid #e7e7e7;border-radius:10px;padding:8px 10px;background:#fafafa">
           <div style="font-weight:700">{drow.get('name','')} <span style="font-weight:400;color:#666">({drow.get('donor_id','')})</span></div>
@@ -472,18 +495,8 @@ with tab_home:
         all_sectors = sorted(projects["sector_focus"].dropna().unique().tolist())
         ui_regions = st.multiselect("Preference: Regions (multi)", options=all_regions, default=pref_regions_default)
         ui_sectors = st.multiselect("Preference: Sectors (multi)", options=all_sectors, default=pref_sectors_default)
-        pref_target = st.number_input(
-            "Preferred project funding target",
-            min_value=0,
-            value=int(drow.get("preferred_target", 0)) if pd.notna(drow.get("preferred_target", np.nan)) else 0,
-            step=1000
-        )
-        cap = st.slider(
-            "Budget cap filter (funding target ≤)",
-            0, int(max(10_000, projects["funding_target"].max())),
-            int(drow.get("budget_cap", 0)) if pd.notna(drow.get("budget_cap", np.nan)) else 0,
-            step=1000
-        )
+        pref_target = st.number_input("Preferred project funding target", min_value=0, value=int(drow.get("preferred_target", 0)) if pd.notna(drow.get("preferred_target", np.nan)) else 0, step=1000)
+        cap = st.slider("Budget cap filter (funding target ≤)", 0, int(max(10_000, projects["funding_target"].max())), int(drow.get("budget_cap", 0)) if pd.notna(drow.get("budget_cap", np.nan)) else 0, step=1000)
 
         st.markdown("**Blend weights**")
         w_rule = st.slider("Rule-based", 0.0, 1.0, 0.30, 0.05)
@@ -491,7 +504,7 @@ with tab_home:
         w_cf   = st.slider("Collaborative (CF)", 0.0, 1.0, 0.30, 0.05)
 
         ethical = st.toggle("Ethical AI (reduce over-exposed items)", value=True)
-        hybrid = st.toggle("Hybrid mode (blend all three)", value=True)
+        hybrid  = st.toggle("Hybrid mode (blend all three)", value=True)
 
         go = st.button("Generate recommendations", type="primary", use_container_width=True)
         clear_btn = st.button("Clear shortlist", use_container_width=True)
@@ -516,13 +529,15 @@ with tab_home:
                 if cap and "funding_target" in recs.columns:
                     recs = recs[recs["funding_target"].fillna(0) <= cap]
                 st.session_state["recs"] = recs.reset_index(drop=True)
+                st.session_state["last_weights"] = weights
+                st.session_state["last_ethical"] = ethical
 
     with right:
         st.subheader("Top recommendations")
         if "shortlist" not in st.session_state: st.session_state["shortlist"] = pd.DataFrame()
         recs = st.session_state.get("recs", pd.DataFrame())
         if not has_rows(recs):
-            st.info("Click **Generate recommendations** on the left.")
+            st.info("Use the left pane and click **Generate recommendations**.")
         else:
             for i, row in recs.iterrows():
                 org = row.get("organisation_type","N/A")
@@ -556,21 +571,21 @@ with tab_home:
                     mime="text/csv"
                 )
 
-# --------------- INSIGHTS ---------------
+# ---------------- INSIGHTS ----------------
 with tab_ins:
     st.subheader("Insights from current recommendations")
     r = st.session_state.get("recs", pd.DataFrame())
     if not has_rows(r):
         st.info("Generate recommendations on Home to see insights.")
     else:
-        # Regions barh
+        # Regions
         reg_counts = r["region"].value_counts()
         fig, ax = make_small_axes("s")
         ax.barh(reg_counts.index, reg_counts.values)
         ax.set_title("Regions in top picks"); ax.invert_yaxis()
         st.pyplot(fig)
 
-        # Sectors donut
+        # Sectors (donut)
         sec_counts = r["sector_focus"].value_counts()
         fig2, ax2 = make_small_axes("s")
         wedges, texts = ax2.pie(sec_counts.values, startangle=90)
@@ -585,7 +600,7 @@ with tab_ins:
         ax3.set_title("Funding target distribution"); ax3.set_xlabel("Target"); ax3.set_ylabel("Count")
         st.pyplot(fig3)
 
-# --------------- DONOR PROGRESS ---------------
+# ---------------- DONOR PROGRESS ----------------
 with tab_prog:
     st.subheader("Donor progress & giving")
     sel_id = st.session_state.get("selected_donor_id", donors.iloc[0]["donor_id"])
@@ -611,12 +626,14 @@ with tab_prog:
     d.metric("Lifetime given (est.)", human_money(lifetime))
 
     if not hist.empty:
+        # sector bar
         proj_sectors = projects.set_index("project_id")["sector_focus"]
         s_counts = pd.Series([proj_sectors.get(_std_id(pid), "Unknown") for pid in hist["project_id"]]).value_counts()
         fig, ax = make_small_axes("s")
         ax.bar(s_counts.index[:10], s_counts.values[:10]); ax.set_title("Interacted sectors (top 10)"); ax.tick_params(axis='x', rotation=20)
         st.pyplot(fig)
 
+        # region donut
         proj_regions = projects.set_index("project_id")["region"]
         r_counts = pd.Series([proj_regions.get(_std_id(pid), "Unknown") for pid in hist["project_id"]]).value_counts()
         fig2, ax2 = make_small_axes("s")
@@ -624,6 +641,7 @@ with tab_prog:
         ax2.set_title("Regions in history")
         st.pyplot(fig2)
 
+        # funding hist
         ft_series = pd.Series([projects.set_index("project_id")["funding_target"].get(_std_id(pid), 0) for pid in hist["project_id"]])
         fig3, ax3 = make_small_axes("s")
         ax3.hist(ft_series.astype(float), bins=12); ax3.set_title("Funding targets (history)")
@@ -631,21 +649,29 @@ with tab_prog:
     else:
         st.info("No historical interactions yet for this donor.")
 
-# --------------- METRICS ---------------
+# ---------------- METRICS ----------------
 with tab_met:
     st.subheader("Evaluation metrics (donor-level)")
-    r = st.session_state.get("recs", pd.DataFrame())
     sel_id = st.session_state.get("selected_donor_id", donors.iloc[0]["donor_id"])
-    k = st.selectbox("Top-K", [5,10], index=0)
-    thr_mode = st.selectbox("Relevance threshold", ["Any positive (>0)", "Median per donor"], index=0)
+    r = st.session_state.get("recs", pd.DataFrame())
 
-    m = compute_metrics_for_donor(sel_id, r, interactions, projects, cf_estimates, k=k, thr_mode=thr_mode)
+    cA, cB, cC = st.columns(3)
+    with cA:
+        model_source = st.selectbox("Scoring source", ["Hybrid","Rule","Content","CF"], index=0)
+        k = st.selectbox("Top-K", [5,10], index=0)
+    with cB:
+        thr_mode = st.selectbox("Relevance threshold", ["Median per donor","Any positive (>0)"], index=0)
+        ethical_m = st.toggle("Ethical AI (for metrics)", value=st.session_state.get("last_ethical", True))
+    with cC:
+        w_rule = st.slider("W_rule (metrics)", 0.0, 1.0, float(st.session_state.get("last_weights",(0.33,0.34,0.33))[0]), 0.05)
+        w_cos  = st.slider("W_content (metrics)", 0.0, 1.0, float(st.session_state.get("last_weights",(0.33,0.34,0.33))[1]), 0.05)
+        w_cf   = st.slider("W_CF (metrics)", 0.0, 1.0, float(st.session_state.get("last_weights",(0.33,0.34,0.33))[2]), 0.05)
 
-    # quick overlap peek
-    if has_rows(r) and has_rows(interactions):
-        top_ids = r["project_id"].astype(str).str.upper().tolist()[:int(k)]
-        seen = set(interactions.loc[interactions["donor_id"]==str(sel_id).upper(), "project_id"].astype(str).str.upper())
-        st.caption(f"Overlap top@{k} vs. donor history: {len(set(top_ids)&seen)} items")
+    m = compute_metrics(
+        sel_id, donors, projects, interactions, cf_estimates, proj_vecs_obj,
+        model_source=model_source, k=int(k), thr_mode=thr_mode,
+        weights=(w_rule, w_cos, w_cf), ethical=ethical_m
+    )
 
     c1,c2,c3 = st.columns(3)
     with c1:
@@ -665,9 +691,9 @@ with tab_met:
         comp = pd.DataFrame({
             "Component": ["Rule","Content","CF"],
             "Score": [
-                r["rule_score_norm"].fillna(0).mean(),
-                r["cosine_score_norm"].fillna(0).mean(),
-                r["cf_score_norm"].fillna(0).mean()
+                r["rule_score_norm"].fillna(0).mean() if "rule_score_norm" in r else 0.0,
+                r["cosine_score_norm"].fillna(0).mean() if "cosine_score_norm" in r else 0.0,
+                r["cf_score_norm"].fillna(0).mean() if "cf_score_norm" in r else 0.0
             ]
         })
         fig, ax = make_small_axes("s")
@@ -677,7 +703,7 @@ with tab_met:
     else:
         st.info("Generate recommendations on Home first.")
 
-# --------------- WHY THESE PICKS ---------------
+# ---------------- WHY THESE PICKS ----------------
 with tab_why:
     st.subheader("Why these picks")
     r = st.session_state.get("recs", pd.DataFrame())
@@ -685,15 +711,15 @@ with tab_why:
         st.info("Generate recommendations on Home first.")
     else:
         for i,row in r.iterrows():
-            comp = pd.DataFrame({"part":["Rule","Content","CF"],
-                                 "val":[row.get("rule_score_norm",0), row.get("cosine_score_norm",0), row.get("cf_score_norm",0)]})
+            comp = pd.DataFrame({"Rule":[row.get("rule_score_norm",0)], "Content":[row.get("cosine_score_norm",0)], "CF":[row.get("cf_score_norm",0)]})
             st.markdown(f"**{i+1}. {row.get('title', row['project_id'])}** — {row.get('region','')} • {row.get('sector_focus','')} • Target {human_money(row.get('funding_target',0))}")
             st.caption(f"Why matched: {row.get('why','')}")
             fig, ax = make_small_axes("xs")
-            ax.bar(comp["part"], comp["val"]); ax.set_ylim(0,1); ax.set_title("Score contribution")
+            comp.T[0].fillna(0).plot(kind="bar", ax=ax, legend=False)
+            ax.set_ylim(0,1); ax.set_title("Score contribution"); ax.tick_params(axis='x', rotation=0)
             st.pyplot(fig)
 
-# --------------- EXPLORE PROJECTS ---------------
+# ---------------- EXPLORE PROJECTS ----------------
 with tab_exp:
     st.subheader("Explore projects")
     c1,c2,c3,c4 = st.columns(4)
@@ -714,7 +740,7 @@ with tab_exp:
         ax.set_title("Funding target distribution (filtered)")
         st.pyplot(fig)
 
-# --------------- COMPARE ALGORITHMS ---------------
+# ---------------- COMPARE ALGORITHMS ----------------
 with tab_cmp:
     st.subheader("Compare algorithms")
     sel_id = st.session_state.get("selected_donor_id", donors.iloc[0]["donor_id"])
@@ -728,24 +754,19 @@ with tab_cmp:
     cC.write("Collaborative (CF) Top-5");   cC.dataframe(run_algo((0,0,1),"CF"))
     cD.write("Hybrid Top-5");               cD.dataframe(run_algo((0.33,0.34,0.33),"Hybrid"))
 
-# --------------- DIAGNOSTICS ---------------
+# ---------------- DIAGNOSTICS ----------------
 with tab_diag:
     st.subheader("Diagnostics")
-    st.write(f"Artifacts folder: {BASE}")
+    st.write("Artifacts folder:", BASE)
     try:
         st.code("\n".join(sorted(os.listdir(BASE))), language="text")
     except Exception:
         pass
     st.write(f"CF estimates present: {'✅' if (cf_estimates is not None and not cf_estimates.empty) else '❌'}")
-    if has_rows(interactions):
-        st.write("Interactions: ✅")
-        st.write(interactions.head(3))
-        st.write(f"Donors with history: {interactions['donor_id'].nunique()}")
-        st.write(f"Projects with history: {interactions['project_id'].nunique()}")
-    else:
-        st.write("Interactions: ❌ not found / empty")
+    st.write(f"Donors with history: {interactions['donor_id'].nunique() if has_rows(interactions) else 0}")
+    st.write(f"Projects with history: {interactions['project_id'].nunique() if has_rows(interactions) else 0}")
 
-# --------------- REGISTER DONOR ---------------
+# ---------------- REGISTER DONOR ----------------
 with tab_reg:
     st.subheader("Register donor")
     with st.form("reg_form"):
