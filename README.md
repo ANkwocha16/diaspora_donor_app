@@ -3,6 +3,10 @@
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://diasporadonorapp-6y5uqwvfczq5gsrwhahxzy.streamlit.app/)
 
 👉 [Live App: Diaspora Donor Recommender](https://diasporadonorapp-6y5uqwvfczq5gsrwhahxzy.streamlit.app/)
+🔗 **Live App**: [Diaspora Donor Recommender](https://diasporadonorapp-6y5uqwvfczq5gsrwhahxzy.streamlit.app/)  
+
+📂 **GitHub Repository**: [Ankwocha/diaspora_donor_app](https://github.com/Ankwocha/diaspora_donor_app.git)
+ 
 
 ---
 
