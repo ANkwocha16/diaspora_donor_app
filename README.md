@@ -36,7 +36,7 @@ The project contributes academically and practically by combining **rule-based**
 │   ├── cf_estimates.csv.gz
 │   └── proj_vectors.parquet      # Precomputed project embeddings 
 ├── colab_notebooks/              # Research and training notebooks
-│   ├── 00-04-hybrid-recommender-full-pipeline.ipynb
+│   ├── 01-hybrid-recommender-full-pipeline.ipynb
 ├── README.md                     # Documentation
 ├── requirements.txt              # Python dependencies
 └── .streamlit/                   # Streamlit configuration
