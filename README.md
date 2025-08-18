@@ -170,7 +170,7 @@ Practical deployment of a live, reproducible recommender system.
 
 🙌 Acknowledgements
 
-University, lecturers, especially my supervisor; Amin Noorozi and fellow students for academic guidance and making learning fun.
+University, lecturers, especially my supervisor; Amin Noroozi and fellow students for academic guidance and making learning fun.
 And to myself, for the perseverance, research, and sleepless nights that made this work possible.
 
 📌 License
